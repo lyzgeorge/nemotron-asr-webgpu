@@ -1,0 +1,10 @@
+# Static site — no build step. Publish the repo root as-is.
+[build]
+  publish = "."
+  command = ""
+
+# Long-cache the app assets (model weights are fetched cross-origin from Hugging Face).
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
