@@ -95,17 +95,44 @@ export function computeMelOffline(x, melFB, win) {
   return frames;
 }
 
-/* ── STREAMING log-mel (center=false, rolling buffer): for live mode ──
-   Tiny constant time-shift vs offline; encoder cache supplies context, fine for live captions. */
+/* ── STREAMING log-mel (rolling buffer): for live mode ──
+   Produces frames IDENTICAL to computeMelOffline (center=true) for every interior frame, so the
+   encoder sees the exact features it was trained on. The key is the one-time left reflect-pad of
+   N_FFT/2 samples at the very start of the utterance: without it each frame is shifted half a window
+   off the grid and the encoder emits only blanks. The only difference vs offline is that the final
+   ~1 frame (which offline supplies via right reflect-pad of future audio) is omitted until more audio
+   arrives — fine for live captions, and streamEnd flushes whatever frames are already emitted. */
 export class StreamingMel {
-  constructor(melFB, win) { this.melFB = melFB; this.win = win; this.prev = 0; this.buf = new Float32Array(0); this.re = new Float32Array(N_FFT); this.im = new Float32Array(N_FFT); }
+  constructor(melFB, win) {
+    this.melFB = melFB; this.win = win;
+    this.prev = 0;                  // last raw sample → continuous preemphasis across chunk boundaries
+    this.buf = new Float32Array(0); // preemphasized samples in "padded" coords (left pad already applied)
+    this.started = false;           // whether the one-time left reflect-pad has been prepended
+    this.re = new Float32Array(N_FFT); this.im = new Float32Array(N_FFT);
+  }
   push(x) {
+    // Preemphasis, continuous across chunks (first sample of the utterance: y[0] = x[0], matching offline).
     const y = new Float32Array(x.length);
     y[0] = x[0] - PREEMPH * this.prev;
     for (let i = 1; i < x.length; i++) y[i] = x[i] - PREEMPH * x[i - 1];
     this.prev = x[x.length - 1];
-    const merged = new Float32Array(this.buf.length + y.length);
-    merged.set(this.buf, 0); merged.set(y, this.buf.length); this.buf = merged;
+
+    // Once, at utterance start, prepend N_FFT/2 reflect-padded samples so frame f is centered at f*HOP
+    // exactly like computeMelOffline (which sets padded[i] = reflect(y, i - pad)).
+    let head = new Float32Array(0);
+    if (!this.started) {
+      const pad = N_FFT >> 1;
+      head = new Float32Array(pad);
+      for (let j = 0; j < pad; j++) head[j] = reflect(y, j - pad);
+      this.started = true;
+    }
+
+    const merged = new Float32Array(this.buf.length + head.length + y.length);
+    merged.set(this.buf, 0);
+    merged.set(head, this.buf.length);
+    merged.set(y, this.buf.length + head.length);
+    this.buf = merged;
+
     const frames = []; let off = 0;
     while (this.buf.length - off >= N_FFT) { frames.push(frameToMel(this.buf, off, this.melFB, this.win, this.re, this.im)); off += HOP; }
     if (off > 0) this.buf = this.buf.slice(off);
