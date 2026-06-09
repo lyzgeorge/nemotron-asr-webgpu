@@ -8,7 +8,7 @@ ort.env.wasm.numThreads = 1;
 const C = CONFIG;
 const post = (m, t) => self.postMessage(m, t || []);
 
-let ENC, DEC, JOINT, VOCAB, MELFB, WINDOW, ready = false;
+let ENC, DEC, JOINT, VOCAB, MELFB, WINDOW, ready = false, EP = "webgpu";
 
 /* ── loading ── */
 async function fetchProg(url, label) {
@@ -19,13 +19,20 @@ async function fetchProg(url, label) {
   const out = new Uint8Array(got); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out;
 }
 async function loadSession(model, data) {
-  const opts = { executionProviders: ["webgpu"] };
-  if (data) { const d = await fetchProg(C.BASE + data, data); opts.externalData = [{ path: data, data: d }]; }
+  let ext;
+  if (data) { const d = await fetchProg(C.BASE + data, data); ext = [{ path: data, data: d }]; }
   const m = await fetchProg(C.BASE + model, model);
-  return ort.InferenceSession.create(m, opts);
+  try {
+    return await ort.InferenceSession.create(m, { executionProviders: [EP], ...(ext ? { externalData: ext } : {}) });
+  } catch (err) {
+    if (EP === "webgpu") { EP = "wasm"; post({ type: "ep", ep: "wasm", note: String((err && err.message) || err) }); return await ort.InferenceSession.create(m, { executionProviders: ["wasm"], ...(ext ? { externalData: ext } : {}) }); }
+    throw err;
+  }
 }
 async function init() {
   if (ready) { post({ type: "ready" }); return; }
+  if (!(typeof navigator !== "undefined" && navigator.gpu)) EP = "wasm";
+  post({ type: "ep", ep: EP });
   post({ type: "status", stage: "loading", detail: "fetching vocab" });
   VOCAB = (await (await fetch(C.BASE + "vocab.txt")).text()).split("\n");
   MELFB = buildMelFB(); WINDOW = buildWindow();
@@ -147,16 +154,15 @@ async function streamEnd() {
   stream = null;
 }
 
-/* ── dispatch ── */
-self.onmessage = async (e) => {
-  const m = e.data;
-  try {
-    if (m.type === "init") await init();
-    else if (m.type === "transcribeFull") await transcribeFull(new Float32Array(m.samples), m.langId);
-    else if (m.type === "streamStart") await streamStart(m.langId);
-    else if (m.type === "streamAudio") await streamAudio(new Float32Array(m.samples));
-    else if (m.type === "streamEnd") await streamEnd();
-  } catch (err) {
-    post({ type: "error", message: err && (err.stack || err.message) || String(err) });
-  }
+/* ── dispatch (serialized: messages run strictly one-at-a-time) ── */
+async function handle(m) {
+  if (m.type === "init") await init();
+  else if (m.type === "transcribeFull") await transcribeFull(new Float32Array(m.samples), m.langId);
+  else if (m.type === "streamStart") await streamStart(m.langId);
+  else if (m.type === "streamAudio") await streamAudio(new Float32Array(m.samples));
+  else if (m.type === "streamEnd") await streamEnd();
+}
+let chain = Promise.resolve();
+self.onmessage = (e) => {
+  chain = chain.then(() => handle(e.data)).catch((err) => post({ type: "error", message: (err && (err.stack || err.message)) || String(err) }));
 };

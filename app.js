@@ -43,6 +43,7 @@ worker.onmessage = (e) => {
       break;
     }
     case "status": log(`· ${m.detail}`, "dim"); break;
+    case "ep": log(`execution provider: ${m.ep}${m.ep === "wasm" ? " (slow — live may lag)" : ""}`, m.ep === "wasm" ? "err" : "ok"); if (m.note) log("webgpu fallback: " + m.note, "dim"); break;
     case "ready": setStatus("model ready", "online"); log("models ready", "ok"); readyResolve && readyResolve(); break;
     case "stream-ready": log("stream started", "ok"); break;
     case "partial": setTranscript(m.text, m.lang); if (m.progress != null) setStatus(`transcribing · ${(m.progress * 100).toFixed(0)}%`, "loading"); break;
@@ -86,7 +87,10 @@ async function startMic() {
   micSource = audioCtx.createMediaStreamSource(micStream);
   micNode = new AudioWorkletNode(audioCtx, "mic-processor");
   micNode.port.onmessage = (e) => onFrame && onFrame(e.data);
-  micSource.connect(micNode); // not connected to destination → no monitoring/feedback
+  micSource.connect(micNode);
+  // Keep the node in the render graph so process() is pulled. The processor writes no
+  // output, so the destination receives silence (no monitoring / no feedback).
+  micNode.connect(audioCtx.destination);
 }
 async function stopMic() {
   onFrame = null;
