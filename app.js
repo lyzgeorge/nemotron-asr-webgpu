@@ -25,12 +25,18 @@ const worker = new Worker("./worker.js", { type: "module" });
 function log(s, cls) { const e = document.createElement("span"); if (cls) e.className = cls; e.textContent = s + "\n"; els.diag.appendChild(e); els.diag.scrollTop = els.diag.scrollHeight; }
 function setStatus(text, state) { els.statusText.textContent = text; els.statusDot.className = "status-dot" + (state ? " " + state : ""); }
 let lastText = "", lastLang = null;
+// Apply the "strip <lang> tag" toggle to a single line of transcript text.
+function formatLine(text, lang) {
+  if (!text) return "";
+  return (els.stripTag.checked || !lang) ? text : `${text} <${lang}>`;
+}
+function setLangChip(lang) { els.langChip.textContent = lang || ""; els.langChip.classList.toggle("hidden", !lang); }
 function setTranscript(text, lang) {
   lastText = text; lastLang = lang;
-  const show = (els.stripTag.checked || !lang) ? text : (text + (lang ? ` <${lang}>` : ""));
+  const show = formatLine(text, lang);
   els.transcript.textContent = show || "—";
   els.transcript.classList.toggle("is-empty", !show);
-  els.langChip.textContent = lang ? lang : ""; els.langChip.classList.toggle("hidden", !lang);
+  setLangChip(lang);
 }
 
 /* ── model-ready gate: resolves on "ready", rejects on a load "error" so callers
@@ -62,13 +68,17 @@ worker.onmessage = (e) => {
       log(`models ready (encoder on ${m.encoderEP || "webgpu"})`, "ok");
       readyResolve && readyResolve();
       break;
-    case "stream-ready": liveStreaming = true; log("stream started", "ok"); break;
+    case "stream-ready": break; // per-segment ack; gating is driven by the VAD on the main thread
     case "stream-tick": pendingBlocks = Math.max(0, pendingBlocks - 1); break;
     case "partial":
+      if (liveSegmenting) { renderLive(m.text, m.lang); break; }
       setTranscript(m.text, m.lang);
       if (m.progress != null) setStatus(`transcribing · ${(m.progress * 100).toFixed(0)}%`, "loading");
       break;
-    case "final": setTranscript(m.text, m.lang); setStatus("model ready", "online"); log(`done — ${m.tokens} tokens`, "ok"); finishBusy(); break;
+    case "final":
+      if (liveSegmenting) { commitLiveSegment(m.text, m.lang); break; }
+      setTranscript(m.text, m.lang); setStatus("model ready", "online"); log(`done — ${m.tokens} tokens`, "ok"); finishBusy();
+      break;
     case "error":
       setStatus("error", "error"); log("ERROR: " + m.message, "err");
       // If the failure happened during load, fail the gate so callers unwind and a retry is possible.
@@ -82,7 +92,7 @@ const langId = () => parseInt(els.lang.value || "0", 10);
 
 /* ── busy gate (prevents overlapping full jobs) ── */
 let busy = false;
-function startBusy() { busy = true; }
+function startBusy() { busy = true; liveSegmenting = false; }
 function finishBusy() { busy = false; }
 
 /* ── WebGPU check ── */
@@ -200,7 +210,8 @@ els.recBtn.addEventListener("click", async () => {
     if (total === 0) { setStatus("model ready", "online"); return; }
     const samples = new Float32Array(total); let o = 0; for (const f of recBuffers) { samples.set(f, o); o += f.length; }
     recBuffers = [];
-    log(`recorded ${(samples.length / SR).toFixed(2)} s`, "dim");
+    let peak = 0; for (let i = 0; i < samples.length; i++) { const a = Math.abs(samples[i]); if (a > peak) peak = a; }
+    log(`recorded ${(samples.length / SR).toFixed(2)} s · peak amplitude ${peak.toFixed(3)} (≈0 ⇒ mic captured silence)`, peak < 0.01 ? "err" : "dim");
     startBusy(); setStatus("transcribing…", "loading");
     try {
       await ensureReady();
@@ -209,12 +220,57 @@ els.recBtn.addEventListener("click", async () => {
   }
 });
 
-/* ── LIVE mode (real-time streaming) ── */
-let live = false, liveStreaming = false, liveBatch = [], liveBatchLen = 0, pendingBlocks = 0;
+/* ── LIVE mode (VAD-gated real-time streaming, segmented per utterance) ──
+   A voice-activity detector gates the encoder so it only runs while you're speaking, and each
+   speech segment becomes its own streaming session → its own transcript line. The detector sits
+   behind a single createEnergyVAD() seam, so it can be swapped for a neural VAD later without
+   touching any of the gating / segmentation wiring below. */
+let live = false, liveSegmenting = false, segActive = false;
+let liveBatch = [], liveBatchLen = 0, pendingBlocks = 0;
+let preRoll = [], preRollLen = 0;      // recent frames kept so a speech onset isn't clipped
+let liveSegments = [];                  // finalized lines: { text, lang }
+let liveVad = null;
 const LIVE_FLUSH = 3200;          // ~200 ms per worker message (less postMessage churn)
 const MAX_PENDING_BLOCKS = 24;    // cap un-decoded audio backlog → drop input rather than balloon latency
+const PRE_ROLL_SAMPLES = SR * 0.2;   // 200 ms of pre-onset audio flushed when a segment opens
+
+/* energy-VAD tunables (named — no magic values) */
+const VAD_ONSET_MS = 120;     // sustained energy required before declaring speech (debounces taps/clicks)
+const VAD_HANGOVER_MS = 650;  // sustained silence required before ending a segment (rides over word gaps)
+const VAD_NOISE_MULT = 3.0;   // speech threshold = ambient noise floor × this
+const VAD_RELEASE_MULT = 1.8; // lower threshold to stay in speech → hysteresis, avoids chattering
+const VAD_MIN_RMS = 0.005;    // absolute floor so a near-silent room still needs real energy to trigger
+const VAD_FLOOR_ALPHA = 0.02; // how fast the ambient-noise estimate adapts while idle
+
+// Energy/RMS voice-activity detector with an adaptive noise floor + onset/hangover hysteresis.
+// process(level, nSamples) is fed one mic frame's RMS at a time; transitions fire the callbacks.
+function createEnergyVAD({ onSpeechStart, onSpeechEnd }) {
+  const ONSET = (SR * VAD_ONSET_MS) / 1000, HANGOVER = (SR * VAD_HANGOVER_MS) / 1000;
+  let floor = null, active = false, onset = 0, silence = 0;
+  const start = () => { active = true; onset = 0; silence = 0; onSpeechStart(); };
+  const end = () => { active = false; onset = 0; silence = 0; onSpeechEnd(); };
+  return {
+    get active() { return active; },
+    process(level, nSamples) {
+      if (floor == null) floor = level;
+      if (active) {
+        const releaseThr = Math.max(floor * VAD_RELEASE_MULT, VAD_MIN_RMS * 0.6);
+        silence = level < releaseThr ? silence + nSamples : 0;
+        if (silence >= HANGOVER) end();
+        return;
+      }
+      const speechThr = Math.max(floor * VAD_NOISE_MULT, VAD_MIN_RMS);
+      // Adapt the floor ONLY on background (sub-threshold) frames — otherwise loud onset frames
+      // poison the floor and later utterances can never cross 3×floor.
+      if (level < speechThr) floor = (1 - VAD_FLOOR_ALPHA) * floor + VAD_FLOOR_ALPHA * level;
+      onset = level > speechThr ? onset + nSamples : 0;
+      if (onset >= ONSET) start();
+    },
+  };
+}
+
 function stopLiveUI() {
-  live = false; liveStreaming = false;
+  live = false; segActive = false;
   els.liveBtn.textContent = "● Start listening"; els.liveBtn.classList.remove("is-stop"); els.liveBtn.classList.add("is-start");
   els.liveDot.classList.remove("online"); els.liveLevel.style.width = "0%"; els.liveBtn.disabled = false;
 }
@@ -226,43 +282,84 @@ function postLiveChunk() {
   pendingBlocks++;
   worker.postMessage({ type: "streamAudio", samples: buf.buffer }, [buf.buffer]);
 }
-els.liveBtn.addEventListener("click", async () => {
-  if (!live) {
-    if (busy) return;
-    els.liveBtn.disabled = true;
-    try {
-      await startMic(); // gesture-preserving mic start
-    } catch (err) { log("mic error: " + micErrorMessage(err), "err"); setStatus("mic error", "error"); els.liveBtn.disabled = false; return; }
+function keepPreRoll(frame) {
+  preRoll.push(frame); preRollLen += frame.length;
+  while (preRollLen - preRoll[0].length >= PRE_ROLL_SAMPLES) { preRollLen -= preRoll[0].length; preRoll.shift(); }
+}
+// Render finalized segments (one line each) plus the in-progress partial, newest at the bottom.
+let liveCurText = "", liveCurLang = null;
+function renderLive(partialText, partialLang) {
+  liveCurText = partialText; liveCurLang = partialLang;
+  const lines = liveSegments.map((s) => formatLine(s.text, s.lang));
+  const all = [...lines, formatLine(partialText, partialLang)].filter(Boolean).join("\n");
+  els.transcript.textContent = all || "—";
+  els.transcript.classList.toggle("is-empty", !all);
+  setLangChip(partialLang || (liveSegments.length ? liveSegments[liveSegments.length - 1].lang : null));
+  els.transcript.scrollTop = els.transcript.scrollHeight; // keep the latest text in view
+}
+function commitLiveSegment(text, lang) {
+  if (text) { liveSegments.push({ text, lang }); log(`segment committed — ${text.length} chars`, "dim"); }
+  renderLive("", null);
+}
+function openSegment() {
+  if (segActive) return;
+  segActive = true;
+  liveBatch = []; liveBatchLen = 0; pendingBlocks = 0;
+  worker.postMessage({ type: "streamStart", langId: langId() });
+  for (const f of preRoll) { liveBatch.push(f); liveBatchLen += f.length; } // include pre-onset audio
+  setStatus("transcribing…", "loading");
+}
+function closeSegment() {
+  if (!segActive) return;
+  segActive = false;
+  postLiveChunk();
+  worker.postMessage({ type: "streamEnd" }); // worker replies "final" → commitLiveSegment
+  setStatus("listening…", "online");
+}
 
-    live = true; liveStreaming = false; liveBatch = []; liveBatchLen = 0; pendingBlocks = 0;
-    setTranscript("", null);
-    els.liveBtn.textContent = "■ Stop"; els.liveBtn.classList.replace("is-start", "is-stop"); els.liveBtn.disabled = false;
-    els.liveDot.classList.add("online"); setStatus("loading model…", "loading");
-    // Until the stream is live, only animate the level meter — pre-ready audio is
-    // dropped (no point transcribing audio captured during a multi-second load).
-    onFrame = (frame) => {
-      setLevel(els.liveLevel, frame);
-      if (!liveStreaming) return;
-      liveBatch.push(frame); liveBatchLen += frame.length;
-      if (liveBatchLen >= LIVE_FLUSH) postLiveChunk();
-    };
-    try {
-      await ensureReady();
-      if (!live) return; // user stopped during load
-      setStatus("listening…", "loading");
-      worker.postMessage({ type: "streamStart", langId: langId() }); // "stream-ready" flips liveStreaming on
-    } catch (err) {
-      log("model load failed: " + err.message, "err"); setStatus("error", "error"); await stopMic(); stopLiveUI();
-    }
-  } else {
-    const wasStreaming = liveStreaming;
-    live = false; liveStreaming = false; await stopMic();
-    if (wasStreaming) { postLiveChunk(); worker.postMessage({ type: "streamEnd" }); }
-    liveBatch = []; liveBatchLen = 0;
+els.liveBtn.addEventListener("click", async () => {
+  if (live) {
+    live = false; await stopMic();
+    if (segActive) closeSegment();
+    liveBatch = []; liveBatchLen = 0; preRoll = []; preRollLen = 0;
     stopLiveUI();
+    return;
+  }
+  if (busy) return;
+  els.liveBtn.disabled = true;
+  try {
+    await startMic(); // gesture-preserving mic start
+  } catch (err) { log("mic error: " + micErrorMessage(err), "err"); setStatus("mic error", "error"); els.liveBtn.disabled = false; return; }
+
+  live = true; liveSegmenting = true; segActive = false;
+  liveBatch = []; liveBatchLen = 0; pendingBlocks = 0; preRoll = []; preRollLen = 0; liveSegments = [];
+  setTranscript("", null);
+  els.liveBtn.textContent = "■ Stop"; els.liveBtn.classList.replace("is-start", "is-stop"); els.liveBtn.disabled = false;
+  els.liveDot.classList.add("online"); setStatus("loading model…", "loading");
+
+  liveVad = createEnergyVAD({
+    onSpeechStart: () => { if (live) openSegment(); },
+    onSpeechEnd: () => { if (live) closeSegment(); },
+  });
+  // Until the model is ready we still animate the meter and let the VAD adapt its noise floor, but
+  // speech onsets don't open a segment (no point transcribing audio captured during a long load).
+  let ready = false;
+  onFrame = (frame) => {
+    setLevel(els.liveLevel, frame);
+    if (ready) liveVad.process(rms(frame), frame.length);
+    if (segActive) { liveBatch.push(frame); liveBatchLen += frame.length; if (liveBatchLen >= LIVE_FLUSH) postLiveChunk(); }
+    keepPreRoll(frame);
+  };
+  try {
+    await ensureReady();
+    if (!live) return; // user stopped during load
+    ready = true;
+    setStatus("listening…", "online");
+  } catch (err) {
+    log("model load failed: " + err.message, "err"); setStatus("error", "error"); await stopMic(); stopLiveUI();
   }
 });
 
-els.stripTag.addEventListener("change", () => setTranscript(lastText, lastLang));
+els.stripTag.addEventListener("change", () => { if (liveSegmenting) renderLive(liveCurText, liveCurLang); else setTranscript(lastText, lastLang); });
 log("Ready. Pick a mode. First run downloads ~750 MB (cached on-device after — re-open is instant).", "dim");
 log("Serve over http://localhost or https:// (module worker + mic require it — file:// won't work).", "dim");
