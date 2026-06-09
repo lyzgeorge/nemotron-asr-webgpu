@@ -1,89 +1,130 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Nemotron 3.5 ASR — on-device</title>
-<link rel="stylesheet" href="./src/styles.css" />
-</head>
-<body>
-  <header class="header">
-    <span class="header__badge">WebGPU · On-device</span>
-    <h1 class="header__title">Nemotron 3.5 ASR</h1>
-    <p class="header__subtitle">Multilingual streaming speech recognition</p>
-  </header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nemotron 3.5 ASR — on-device</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <span class="header__badge">WebGPU · On-device</span>
+      <h1 class="header__title">Nemotron 3.5 ASR</h1>
+      <p class="header__subtitle">Multilingual streaming speech recognition</p>
+    </header>
 
-  <div id="webgpuWarning" class="webgpu-warning hidden">WebGPU isn't available in this browser. Use Chrome or Edge (or enable the WebGPU flag).</div>
+    <div id="webgpuWarning" class="webgpu-warning hidden">
+      WebGPU isn't available in this browser. Use Chrome or Edge (or enable the
+      WebGPU flag).
+    </div>
 
-  <div id="modelLoad" class="model-load">
-    <button id="loadBtn" class="btn-action is-start">⬇ Load model (~750 MB)</button>
-    <span class="hint">One-time download, cached on-device.</span>
-  </div>
+    <div id="modelLoad" class="model-load">
+      <button id="loadBtn" class="btn-action is-start">
+        ⬇ Load model (~750 MB)
+      </button>
+      <span class="hint">One-time download, cached on-device.</span>
+    </div>
 
-  <nav class="mode-switch" role="tablist">
-    <button class="mode-btn" data-mode="record">● Record</button>
-    <button class="mode-btn" data-mode="live">Live</button>
-    <button class="mode-btn active" data-mode="file">File</button>
-  </nav>
+    <nav class="mode-switch" role="tablist">
+      <button class="mode-btn" data-mode="record">● Record</button>
+      <button class="mode-btn" data-mode="live">Live</button>
+      <button class="mode-btn active" data-mode="file">File</button>
+    </nav>
 
-  <section class="controls">
-    <div class="field">
-      <span class="field__label">Options</span>
-      <div class="opts">
-        <label>lang_id <input type="number" id="langId" value="0" min="0" max="127" /></label>
-        <label><input type="checkbox" id="stripTag" checked /> strip language tag</label>
-        <span id="langChip" class="lang-chip hidden"></span>
+    <section class="controls">
+      <div class="field">
+        <span class="field__label">Options</span>
+        <div class="opts">
+          <label>
+            lang_id
+            <input
+              type="number"
+              id="langId"
+              value="0"
+              min="0"
+              max="127"
+            />
+          </label>
+          <label>
+            <input type="checkbox" id="stripTag" checked />
+            strip language tag
+          </label>
+          <span id="langChip" class="lang-chip hidden"></span>
+        </div>
       </div>
-    </div>
 
-    <!-- RECORD -->
-    <div id="panel-record" class="mode-panel hidden">
-      <div class="mic-row">
-        <button id="recBtn" class="mic-btn is-start">● Record</button>
-        <div class="level-meter"><div id="recLevelFill" class="level-fill"></div></div>
-        <span id="recTimer" class="timer">0.0s</span>
+      <!-- RECORD -->
+      <div id="panel-record" class="mode-panel hidden">
+        <div class="mic-row">
+          <button id="recBtn" class="mic-btn is-start">● Record</button>
+          <div class="level-meter">
+            <div id="recLevelFill" class="level-fill"></div>
+          </div>
+          <span id="recTimer" class="timer">0.0s</span>
+        </div>
+        <span class="hint"
+          >Record from your mic, then transcribe on stop (highest
+          accuracy).</span
+        >
       </div>
-      <span class="hint">Record from your mic, then transcribe on stop (highest accuracy).</span>
-    </div>
 
-    <!-- LIVE -->
-    <div id="panel-live" class="mode-panel hidden">
-      <div class="mic-row">
-        <span id="liveDot" class="live-dot"></span>
-        <button id="liveBtn" class="mic-btn is-start">● Start listening</button>
-        <div class="level-meter"><div id="liveLevelFill" class="level-fill"></div></div>
+      <!-- LIVE -->
+      <div id="panel-live" class="mode-panel hidden">
+        <div class="mic-row">
+          <span id="liveDot" class="live-dot"></span>
+          <button id="liveBtn" class="mic-btn is-start">
+            ● Start listening
+          </button>
+          <div class="level-meter">
+            <div id="liveLevelFill" class="level-fill"></div>
+          </div>
+        </div>
+        <span class="hint"
+          >Real-time streaming — text appears as you speak.</span
+        >
       </div>
-      <span class="hint">Real-time streaming — text appears as you speak.</span>
-    </div>
 
-    <!-- FILE -->
-    <div id="panel-file" class="mode-panel">
-      <div class="file-row">
-        <input type="file" id="fileInput" accept="audio/*" />
-        <button id="fileBtn" class="btn-action is-start" disabled>Transcribe</button>
+      <!-- FILE -->
+      <div id="panel-file" class="mode-panel">
+        <div class="file-row">
+          <input type="file" id="fileInput" accept="audio/*" />
+          <button id="fileBtn" class="btn-action is-start" disabled>
+            Transcribe
+          </button>
+        </div>
+        <span class="hint"
+          >wav / mp3 / m4a / etc. — decoded and resampled to 16 kHz
+          locally.</span
+        >
       </div>
-      <span class="hint">wav / mp3 / m4a / etc. — decoded and resampled to 16 kHz locally.</span>
+
+      <div class="field field--grow">
+        <span class="field__label">Transcript</span>
+        <div id="transcript" class="response-area response-area--tall is-empty">
+          —
+        </div>
+      </div>
+
+      <button id="diagToggle" class="diag-toggle">▸ diagnostics</button>
+      <div id="diag" class="response-area diag hidden"></div>
+      <button id="clearCacheBtn" class="diag-toggle">
+        ⌫ clear cached model (~750 MB)
+      </button>
+    </section>
+
+    <div class="status-bar">
+      <span class="status-chip"
+        ><span id="statusDot" class="status-dot"></span
+        ><span id="statusText">idle</span></span
+      >
+      <span class="webgpu-tag">WebGPU</span>
     </div>
 
-    <div class="field field--grow">
-      <span class="field__label">Transcript</span>
-      <div id="transcript" class="response-area response-area--tall is-empty">—</div>
-    </div>
+    <footer class="footer">
+      Nemotron 3.5 ASR (INT4) via onnxruntime-web · model © NVIDIA · ONNX by
+      onnx-community
+    </footer>
 
-    <button id="diagToggle" class="diag-toggle">▸ diagnostics</button>
-    <div id="diag" class="response-area diag hidden"></div>
-    <button id="clearCacheBtn" class="diag-toggle">⌫ clear cached model (~750 MB)</button>
-  </section>
-
-  <div class="status-bar">
-    <span class="status-chip"><span id="statusDot" class="status-dot"></span><span id="statusText">idle</span></span>
-    <span class="webgpu-tag">WebGPU</span>
-  </div>
-
-  <footer class="footer">
-    Nemotron 3.5 ASR (INT4) via onnxruntime-web · model © NVIDIA · ONNX by onnx-community
-  </footer>
-
-  <script type="module" src="./src/app.js"></script>
-</body>
+    <script type="module" src="./src/app.js"></script>
+  </body>
 </html>

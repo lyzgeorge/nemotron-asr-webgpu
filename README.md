@@ -1,8 +1,8 @@
 # Nemotron 3.5 ASR — in-browser (WebGPU)
 
-NVIDIA **Nemotron 3.5 ASR** (cache-aware FastConformer-RNNT, INT4 ONNX) running **entirely client-side** via `onnxruntime-web` on WebGPU. No server, no API key — audio never leaves the browser. Model weights (~750 MB total; the encoder alone is ~690 MB) are fetched from the Hugging Face `onnx-community` repo and **persisted on-device via the Cache API**, so re-opening the page is instant.
+NVIDIA **Nemotron 3.5 ASR** (cache-aware FastConformer-RNNT, INT4 ONNX) running **entirely client-side** via `onnxruntime-web` on WebGPU. Model weights (~750 MB total; the encoder alone is ~690 MB) are fetched from the Hugging Face `onnx-community` repo and **persisted on-device via the Cache API**, so re-opening the page is instant.
 
-Nothing downloads on page load. Click **Load model** to start the one-time download — the Record / Live / File controls stay disabled until the model is ready.
+Click **Load model** to start the one-time download — the Record / Live / File controls stay disabled until the model is ready.
 
 ## Modes
 - **Record** — capture from the mic, transcribe on stop (offline `center=true` features, highest accuracy).
