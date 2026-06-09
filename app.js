@@ -10,7 +10,7 @@ const els = {
   lang: $("langId"), langChip: $("langChip"), stripTag: $("stripTag"),
   transcript: $("transcript"),
   statusDot: $("statusDot"), statusText: $("statusText"),
-  diag: $("diag"), diagToggle: $("diagToggle"), clearCacheBtn: $("clearCacheBtn"),
+  diag: $("diag"), diagToggle: $("diagToggle"), clearCacheBtn: $("clearCacheBtn"), loadBtn: $("loadBtn"),
   // record
   recBtn: $("recBtn"), recTimer: $("recTimer"), recLevel: $("recLevelFill"),
   // live
@@ -66,6 +66,7 @@ worker.onmessage = (e) => {
     case "ready":
       readyState = "ready"; setStatus("model ready", "online");
       log(`models ready (encoder on ${m.encoderEP || "webgpu"})`, "ok");
+      reflectModelState(); // unlock the mode/action buttons
       readyResolve && readyResolve();
       break;
     case "stream-ready": break; // per-segment ack; gating is driven by the VAD on the main thread
@@ -84,6 +85,7 @@ worker.onmessage = (e) => {
       // If the failure happened during load, fail the gate so callers unwind and a retry is possible.
       if (readyState === "loading") { readyState = "idle"; readyReject && readyReject(new Error(m.message)); }
       finishBusy(); stopLiveUI(); finishRecordUI();
+      reflectModelState(); // re-offer the Load button if the load failed; keep controls gated
       break;
   }
 };
@@ -106,15 +108,31 @@ if (!HAS_GPU) {
   if (IS_MOBILE) setStatus("WebGPU unavailable", "error");
 }
 
+/* ── model-load gating: nothing is usable until the model is ready. The user kicks off the large,
+   one-time download explicitly via the Load button — it never starts automatically on landing. ── */
+function reflectModelState() {
+  const ready = readyState === "ready", loading = readyState === "loading";
+  const blocked = IS_MOBILE && !HAS_GPU; // device can't run the model at all
+  els.loadBtn.disabled = ready || loading || blocked;
+  els.loadBtn.textContent = ready ? "✓ Model loaded" : loading ? "Loading model…" : "⬇ Load model (~750 MB)";
+  els.loadBtn.classList.toggle("hidden", ready);
+  els.modeBtns.forEach((b) => (b.disabled = !ready));
+  els.recBtn.disabled = !ready;
+  els.liveBtn.disabled = !ready;
+  els.file.disabled = !ready;
+  els.fileBtn.disabled = !ready || !els.file.files.length;
+}
+els.loadBtn.addEventListener("click", () => {
+  if (readyState !== "idle") return;
+  ensureReady().catch((err) => log("model load failed: " + (err.message || err), "err"));
+  reflectModelState(); // reflect the "loading" state immediately
+});
+reflectModelState(); // initial: controls disabled, Load button offered (unless the device can't run it)
+
 /* ── mode switching ── */
 function setMode(mode) {
   els.modeBtns.forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   for (const k in els.panels) els.panels[k].classList.toggle("hidden", k !== mode);
-  // Kick off the (gesture-free) model load as soon as the user shows intent to
-  // use the mic, so it's likely ready by the time they press the button.
-  if ((mode === "record" || mode === "live") && readyState === "idle" && (HAS_GPU || !IS_MOBILE)) {
-    ensureReady().catch(() => {});
-  }
 }
 els.modeBtns.forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
 setMode("file");
@@ -159,7 +177,7 @@ function micErrorMessage(err) {
 }
 
 /* ── FILE mode ── */
-els.file.addEventListener("change", () => (els.fileBtn.disabled = !els.file.files.length));
+els.file.addEventListener("change", () => (els.fileBtn.disabled = readyState !== "ready" || !els.file.files.length));
 els.fileBtn.addEventListener("click", async () => {
   if (busy || !els.file.files.length) return;
   startBusy(); els.fileBtn.disabled = true;
@@ -176,7 +194,7 @@ els.fileBtn.addEventListener("click", async () => {
     setStatus("transcribing…", "loading");
     worker.postMessage({ type: "transcribeFull", samples: samples.buffer, langId: langId() }, [samples.buffer]);
   } catch (err) { setStatus("error", "error"); log("ERROR: " + (err.stack || err.message), "err"); finishBusy(); }
-  els.fileBtn.disabled = !els.file.files.length;
+  els.fileBtn.disabled = readyState !== "ready" || !els.file.files.length;
 });
 
 /* ── RECORD mode (capture, then transcribe on stop) ── */

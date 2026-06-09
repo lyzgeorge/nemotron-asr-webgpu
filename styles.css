@@ -155,6 +155,14 @@ textarea, .response-area {
 }
 .mode-btn:hover { color: var(--spark-text-1); }
 .mode-btn.active { background: var(--spark-accent-dim); color: var(--spark-accent-light); box-shadow: inset 0 0 0 1px rgba(124,92,252,0.25); }
+.mode-btn:disabled { opacity: .4; cursor: not-allowed; }
+.mode-btn:disabled:hover { color: var(--spark-text-2); }
+.mic-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Load-model bar (shown until the model is ready, then hidden) */
+.model-load { width: min(94vw, 720px); display: flex; flex-direction: column; gap: 8px; }
+.model-load .btn-action { width: 100%; }
+.model-load .hint { text-align: center; }
 
 /* Options row (lang_id + tag toggle) */
 .opts { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
