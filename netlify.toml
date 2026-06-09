@@ -3,8 +3,9 @@
   publish = "."
   command = ""
 
-# Long-cache the app assets (model weights are fetched cross-origin from Hugging Face).
+# Always revalidate app files so deploys are never served stale from browser cache.
+# (Model weights are fetched cross-origin from Hugging Face, so there's no perf cost here.)
 [[headers]]
-  for = "/*.js"
+  for = "/*"
   [headers.values]
-    Cache-Control = "public, max-age=3600"
+    Cache-Control = "public, max-age=0, must-revalidate"
