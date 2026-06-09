@@ -20,7 +20,8 @@ const els = {
 };
 
 /* ── worker ── */
-const worker = new Worker("./worker.js", { type: "module" });
+// Resolve relative to this module's URL (src/) so worker/worklet load correctly no matter how the page is served.
+const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 
 function log(s, cls) { const e = document.createElement("span"); if (cls) e.className = cls; e.textContent = s + "\n"; els.diag.appendChild(e); els.diag.scrollTop = els.diag.scrollHeight; }
 function setStatus(text, state) { els.statusText.textContent = text; els.statusDot.className = "status-dot" + (state ? " " + state : ""); }
@@ -149,7 +150,7 @@ async function startMic() {
   audioCtx = new AudioContext({ sampleRate: SR });
   micStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
   if (audioCtx.state === "suspended") await audioCtx.resume();
-  await audioCtx.audioWorklet.addModule("./mic-processor.js");
+  await audioCtx.audioWorklet.addModule(new URL("./mic-processor.js", import.meta.url));
   micSource = audioCtx.createMediaStreamSource(micStream);
   micNode = new AudioWorkletNode(audioCtx, "mic-processor");
   micNode.port.onmessage = (e) => onFrame && onFrame(e.data);
