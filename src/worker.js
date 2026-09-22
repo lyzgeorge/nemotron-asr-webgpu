@@ -57,7 +57,9 @@ async function fetchBlobCached(url, label) {
       return await hit.blob();
     }
   }
-  let resp = await fetch(url);
+  // huggingface.co returns 404 (without CORS headers) when the Referer is a *.workers.dev origin
+  const fetchOpts = { referrerPolicy: "no-referrer" };
+  let resp = await fetch(url, fetchOpts);
   if (!resp.ok || !resp.body)
     throw new Error(`HTTP ${resp.status || "?"} fetching ${label}`);
   const total = Number(resp.headers.get("content-length")) || 0;
@@ -80,7 +82,7 @@ async function fetchBlobCached(url, label) {
         type: "status",
         detail: `cache unavailable (${(e && e.name) || e}); loading without cache`,
       });
-      resp = await fetch(url);
+      resp = await fetch(url, fetchOpts);
       if (!resp.ok || !resp.body)
         throw new Error(`HTTP ${resp.status || "?"} re-fetching ${label}`);
     }
