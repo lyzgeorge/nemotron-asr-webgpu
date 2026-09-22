@@ -4,6 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nemotron 3.5 ASR — on-device</title>
+    <meta name="theme-color" content="#08090c" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Nemotron ASR" />
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
@@ -126,5 +133,10 @@
     </footer>
 
     <script type="module" src="./src/app.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        addEventListener("load", () => navigator.serviceWorker.register("./sw.js"));
+      }
+    </script>
   </body>
 </html>

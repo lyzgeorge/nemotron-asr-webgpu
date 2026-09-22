@@ -42,6 +42,12 @@ All heavy compute runs in the worker, so the UI never blocks.
 - Mobile **requires** WebGPU for the encoder; the 690 MB model is not run on the wasm CPU on phones. A clear message is shown when WebGPU is missing.
 - **Clear cached model** (under diagnostics) wipes the on-device cache; reload to re-download.
 
+## Install as an app (PWA)
+The site ships a web app manifest and a service worker that caches the app shell, so it can be installed to the home screen and opened offline once the model has been downloaded (the weights live in their own Cache API bucket).
+- **Android / Chrome:** open the site → menu → *Install app* (or *Add to Home screen*). WebGPU is required.
+- **iPhone / Safari:** Share → *Add to Home Screen*. Needs iOS 26 (WebGPU on by default). Home-screen apps are exempt from Safari's 7-day storage eviction, but a 690 MB cache entry can still be evicted under storage pressure.
+- Do the first load on Wi-Fi; nothing runs while the app is backgrounded or the screen is locked.
+
 ## Run locally
 Module workers and the mic require a real origin — `file://` will **not** work.
 ```bash
